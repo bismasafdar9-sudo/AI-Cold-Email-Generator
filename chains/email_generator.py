@@ -1,101 +1,52 @@
 import os
 import streamlit as st
-import pandas as pd
 import chromadb
-
 from dotenv import load_dotenv
 from chromadb.utils import embedding_functions
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 
-# ---------------- Load Environment ----------------
+# ---------------- Load API Key ----------------
 
 load_dotenv()
 
 try:
-    api_key = st.secrets["GOOGLE_API_KEY"]
+    GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
 except Exception:
-    api_key = os.getenv("GOOGLE_API_KEY")
+    GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
-if not api_key:
+if not GOOGLE_API_KEY:
     raise Exception(
-        "GOOGLE_API_KEY not found. Please add it in Streamlit Secrets or .env"
+        "GOOGLE_API_KEY not found. Add it in Streamlit Secrets or .env file."
     )
 
 # ---------------- Gemini ----------------
 
-llm = ChatGoogleGenerativeAI(
-    model="gemini-3.5-flash",
-    google_api_key=api_key,
-    temperature=0.3
-)
+@st.cache_resource
+def load_llm():
+    return ChatGoogleGenerativeAI(
+        model="gemini-3.5-flash-lite",
+        google_api_key=GOOGLE_API_KEY,
+        temperature=0.3
+    )
 
 # ---------------- ChromaDB ----------------
 
-client = chromadb.PersistentClient(path="chroma_db")
-
-embedding_function = embedding_functions.SentenceTransformerEmbeddingFunction(
-    model_name="all-MiniLM-L6-v2"
-)
-
-
+@st.cache_resource
 def load_collection():
 
-    try:
-        collection = client.get_collection(
-            name="portfolio",
-            embedding_function=embedding_function
-        )
+    client = chromadb.PersistentClient(path="chroma_db")
 
-        if collection.count() > 0:
-            return collection
+    embedding_function = embedding_functions.SentenceTransformerEmbeddingFunction(
+        model_name="all-MiniLM-L6-v2"
+    )
 
-    except Exception:
-        pass
-
-    try:
-        client.delete_collection("portfolio")
-    except Exception:
-        pass
-
-    collection = client.create_collection(
+    return client.get_collection(
         name="portfolio",
         embedding_function=embedding_function
     )
 
-    df = pd.read_csv("portfolio.csv")
-
-    documents = []
-    metadatas = []
-    ids = []
-
-    for i, row in df.iterrows():
-
-        documents.append(
-            f"""
-Project: {row['Project']}
-Skills: {row['Skills']}
-Description: {row['Description']}
-"""
-        )
-
-        metadatas.append({
-            "project": row["Project"],
-            "skills": row["Skills"],
-            "link": row["Link"]
-        })
-
-        ids.append(str(i))
-
-    collection.add(
-        documents=documents,
-        metadatas=metadatas,
-        ids=ids
-    )
-
-    return collection
-
-
+llm = load_llm()
 collection = load_collection()
 
 # ---------------- Prompt ----------------
@@ -103,7 +54,7 @@ collection = load_collection()
 prompt = ChatPromptTemplate.from_template("""
 You are an expert cold email writer.
 
-Write ONE professional cold email for the following job description.
+Write ONE professional cold email.
 
 Job Description:
 {job_description}
@@ -112,20 +63,18 @@ Relevant Portfolio:
 {portfolio}
 
 Instructions:
-
-- Use ONLY the portfolio information provided.
-- Do NOT invent any projects, skills or experience.
+- Use ONLY the provided portfolio.
+- Do NOT invent any skills or projects.
 - Mention the project naturally.
-- Mention the relevant skills.
-- Keep the email between 150 and 200 words.
-- Use a professional tone.
-- End with a polite closing.
+- Mention relevant skills.
+- Keep the email between 150-200 words.
+- Professional tone.
+- End politely.
 """)
 
 chain = prompt | llm
 
 # ---------------- Generate Email ----------------
-
 
 def generate_email(job_description):
 
@@ -134,7 +83,7 @@ def generate_email(job_description):
         n_results=1
     )
 
-    if len(results["metadatas"][0]) == 0:
+    if not results["metadatas"][0]:
         return "No matching portfolio found."
 
     portfolio = results["metadatas"][0][0]
@@ -144,29 +93,24 @@ def generate_email(job_description):
         "portfolio": portfolio
     })
 
-    # If Gemini returns string
-    if isinstance(response.content, str):
-        return response.content
+    content = response.content
 
-    # If Gemini returns list
-    if isinstance(response.content, list):
+    if isinstance(content, str):
+        return content
+
+    if isinstance(content, list):
 
         email = ""
 
-        for item in response.content:
+        for item in content:
 
             if isinstance(item, dict):
-
                 if item.get("type") == "text":
                     email += item.get("text", "")
 
-            else:
-
-                try:
-                    email += item.text
-                except Exception:
-                    pass
+            elif hasattr(item, "text"):
+                email += item.text
 
         return email
 
-    return str(response.content)
+    return str(content)
