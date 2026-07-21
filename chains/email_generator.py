@@ -12,9 +12,6 @@ from langchain_core.prompts import ChatPromptTemplate
 
 load_dotenv()
 
-api_key = None
-
-# First try Streamlit Secrets
 try:
     api_key = st.secrets["GOOGLE_API_KEY"]
 except Exception:
@@ -22,7 +19,7 @@ except Exception:
 
 if not api_key:
     raise Exception(
-        "GOOGLE_API_KEY not found. Please add it in Streamlit Secrets."
+        "GOOGLE_API_KEY not found. Please add it in Streamlit Secrets or .env"
     )
 
 # ---------------- Gemini ----------------
@@ -43,10 +40,6 @@ embedding_function = embedding_functions.SentenceTransformerEmbeddingFunction(
 
 
 def load_collection():
-    """
-    Load collection.
-    If collection does not exist, create it automatically.
-    """
 
     try:
         collection = client.get_collection(
@@ -60,7 +53,6 @@ def load_collection():
     except Exception:
         pass
 
-    # Delete old collection if exists
     try:
         client.delete_collection("portfolio")
     except Exception:
@@ -111,25 +103,23 @@ collection = load_collection()
 prompt = ChatPromptTemplate.from_template("""
 You are an expert cold email writer.
 
-Write ONE professional cold email.
+Write ONE professional cold email for the following job description.
 
 Job Description:
-
 {job_description}
 
 Relevant Portfolio:
-
 {portfolio}
 
 Instructions:
 
-- Use ONLY the provided portfolio.
-- Do NOT invent projects.
-- Mention the retrieved project naturally.
-- Mention relevant skills.
-- Keep it between 150-200 words.
-- Professional tone.
-- End politely.
+- Use ONLY the portfolio information provided.
+- Do NOT invent any projects, skills or experience.
+- Mention the project naturally.
+- Mention the relevant skills.
+- Keep the email between 150 and 200 words.
+- Use a professional tone.
+- End with a polite closing.
 """)
 
 chain = prompt | llm
@@ -145,7 +135,7 @@ def generate_email(job_description):
     )
 
     if len(results["metadatas"][0]) == 0:
-        return "No matching project found."
+        return "No matching portfolio found."
 
     portfolio = results["metadatas"][0][0]
 
@@ -154,7 +144,29 @@ def generate_email(job_description):
         "portfolio": portfolio
     })
 
-    if hasattr(response, "content"):
+    # If Gemini returns string
+    if isinstance(response.content, str):
         return response.content
 
-    return str(response)
+    # If Gemini returns list
+    if isinstance(response.content, list):
+
+        email = ""
+
+        for item in response.content:
+
+            if isinstance(item, dict):
+
+                if item.get("type") == "text":
+                    email += item.get("text", "")
+
+            else:
+
+                try:
+                    email += item.text
+                except Exception:
+                    pass
+
+        return email
+
+    return str(response.content)
