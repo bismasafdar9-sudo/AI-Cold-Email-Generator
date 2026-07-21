@@ -1,4 +1,5 @@
 import os
+import streamlit as st
 import pandas as pd
 import chromadb
 
@@ -7,21 +8,29 @@ from chromadb.utils import embedding_functions
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 
+# ---------------- Load Environment ----------------
+
 load_dotenv()
 
-# ---------------- Gemini ----------------
+api_key = None
 
-api_key = os.getenv("GOOGLE_API_KEY")
+# First try Streamlit Secrets
+try:
+    api_key = st.secrets["GOOGLE_API_KEY"]
+except Exception:
+    api_key = os.getenv("GOOGLE_API_KEY")
 
 if not api_key:
     raise Exception(
-        "GOOGLE_API_KEY not found. Add it in Streamlit Secrets or .env file."
+        "GOOGLE_API_KEY not found. Please add it in Streamlit Secrets."
     )
 
+# ---------------- Gemini ----------------
+
 llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash",
+    model="gemini-3.5-flash",
     google_api_key=api_key,
-    temperature=0.3,
+    temperature=0.3
 )
 
 # ---------------- ChromaDB ----------------
@@ -33,30 +42,33 @@ embedding_function = embedding_functions.SentenceTransformerEmbeddingFunction(
 )
 
 
-def get_or_create_collection():
+def load_collection():
+    """
+    Load collection.
+    If collection does not exist, create it automatically.
+    """
+
     try:
         collection = client.get_collection(
             name="portfolio",
-            embedding_function=embedding_function,
+            embedding_function=embedding_function
         )
 
-        count = collection.count()
-
-        if count > 0:
+        if collection.count() > 0:
             return collection
 
-    except:
+    except Exception:
         pass
 
-    # Create new collection
+    # Delete old collection if exists
     try:
         client.delete_collection("portfolio")
-    except:
+    except Exception:
         pass
 
     collection = client.create_collection(
         name="portfolio",
-        embedding_function=embedding_function,
+        embedding_function=embedding_function
     )
 
     df = pd.read_csv("portfolio.csv")
@@ -75,72 +87,74 @@ Description: {row['Description']}
 """
         )
 
-        metadatas.append(
-            {
-                "project": row["Project"],
-                "skills": row["Skills"],
-                "link": row["Link"],
-            }
-        )
+        metadatas.append({
+            "project": row["Project"],
+            "skills": row["Skills"],
+            "link": row["Link"]
+        })
 
         ids.append(str(i))
 
     collection.add(
         documents=documents,
         metadatas=metadatas,
-        ids=ids,
+        ids=ids
     )
 
     return collection
 
 
-collection = get_or_create_collection()
+collection = load_collection()
 
 # ---------------- Prompt ----------------
 
-prompt = ChatPromptTemplate.from_template(
-    """
+prompt = ChatPromptTemplate.from_template("""
 You are an expert cold email writer.
 
 Write ONE professional cold email.
 
 Job Description:
+
 {job_description}
 
 Relevant Portfolio:
+
 {portfolio}
 
 Instructions:
 
-- Mention ONLY the retrieved project.
-- Mention ONLY the retrieved skills.
-- Do NOT invent any experience.
-- Keep it between 150 and 200 words.
+- Use ONLY the provided portfolio.
+- Do NOT invent projects.
+- Mention the retrieved project naturally.
+- Mention relevant skills.
+- Keep it between 150-200 words.
 - Professional tone.
 - End politely.
-"""
-)
+""")
 
 chain = prompt | llm
+
+# ---------------- Generate Email ----------------
 
 
 def generate_email(job_description):
 
     results = collection.query(
         query_texts=[job_description],
-        n_results=1,
+        n_results=1
     )
 
     if len(results["metadatas"][0]) == 0:
-        return "No matching portfolio found."
+        return "No matching project found."
 
     portfolio = results["metadatas"][0][0]
 
-    response = chain.invoke(
-        {
-            "job_description": job_description,
-            "portfolio": portfolio,
-        }
-    )
+    response = chain.invoke({
+        "job_description": job_description,
+        "portfolio": portfolio
+    })
 
-    return response.content
+    if hasattr(response, "content"):
+        return response.content
+
+    return str(response)
